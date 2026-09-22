@@ -4,7 +4,7 @@ compatibility_date = "2024-11-01"
 
 # Setelah membuat KV namespace (lihat panduan), tempel ID-nya di sini.
 kv_namespaces = [
-  { binding = "SAWERIA_KV", id = "f42d13b2d7f041d59587c5ad8dcf76ff" }
+  { binding = "SAWERIA_KV", id = "id_lu_anding" }
 ]
 
 # SAWERIA_STREAM_KEY TIDAK ditaruh di sini.
