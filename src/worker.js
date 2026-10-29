@@ -35,11 +35,32 @@ async function verifySaweriaSignature(rawBody, signatureHeader, streamKey) {
   return diff === 0;
 }
 
+// Deteksi apakah payload ini adalah TEST dari tombol "Munculkan Notifikasi" Saweria.
+// Saweria selalu kirim ID yang sama (00000000-0000-0000-0000-000000000000) untuk test,
+// jadi kalau dedupe by ID, klik test ke-2 dst. akan di-skip.
+// Untuk test, kita generate ID baru tiap kali, supaya bisa multi-test.
+// Untuk donasi asli, ID Saweria selalu unik per transaksi â†’ dedupe tetap jalan.
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+function isTestPayload(payload) {
+  const id = String(payload.id || "").toLowerCase();
+  // Klik "Munculkan Notifikasi" Saweria selalu pakai nil UUID.
+  if (id === NIL_UUID) return true;
+  // Cadangan: kalau besok Saweria ganti format test, deteksi via ciri khas lain.
+  if (payload.amount_raw === 69420 && /FAKE MESSAGE/i.test(String(payload.message || ""))) {
+    return true;
+  }
+  return false;
+}
+
 // Menerima donasi baru dari webhook Saweria.
 // Karena tiap donasi punya key unik sendiri (don:<id>), dua donasi berbeda
 // yang masuk bersamaan otomatis tidak akan saling menimpa.
 async function pushItem(env, payload) {
-  const id = String(payload.id);
+  const testMode = isTestPayload(payload);
+  // Untuk test: generate UUID baru tiap kali (bisa multi-test).
+  // Untuk donasi asli: pakai ID asli Saweria (dedupe by ID).
+  const id = testMode ? crypto.randomUUID() : String(payload.id);
   const key = keyFor(id);
 
   const existing = await env.SAWERIA_KV.get(key);
@@ -49,10 +70,13 @@ async function pushItem(env, payload) {
 
   const item = {
     id,
+    original_id: testMode ? String(payload.id) : null, // simpan ID asli Saweria untuk traceability
+    is_test: testMode,
     amount_raw: payload.amount_raw,
     donator_name: payload.donator_name,
     message: payload.message,
     created_at: payload.created_at,
+    received_at: new Date().toISOString(),
     status: "pending",
     leaseToken: null,
     leaseExpires: 0,
@@ -65,7 +89,7 @@ async function pushItem(env, payload) {
     metadata: { status: item.status, leaseExpires: 0, doneAt: 0 },
   });
 
-  return { ok: true };
+  return { ok: true, is_test: testMode };
 }
 
 // Roblox mengambil donasi yang belum terkirim.
@@ -123,6 +147,8 @@ async function pullItems(env, limit) {
         amount_raw: item.amount_raw,
         donator_name: item.donator_name,
         message: item.message,
+        is_test: item.is_test ?? false,
+        original_id: item.original_id ?? null,
         createdAt: item.created_at,
         created_at: item.created_at,
       });
@@ -208,6 +234,7 @@ export default {
         message: payload.message,
         created_at: payload.created_at,
       });
+      // Response balik ke Saweria. is_test=true kalau ini dari tombol test.
       return json(result);
     }
 
@@ -263,12 +290,14 @@ export default {
     if (url.pathname === "/debug/push" && request.method === "POST") {
       if (!checkDebugAuth(request, env)) return json({ ok: false, error: "unauthorized" }, 401);
       const payload = await request.json().catch(() => ({}));
+      // Untuk multi-test: kalau id kosong atau nil-UUID, pushItem otomatis
+      // generate UUID baru lewat isTestPayload detection.
       const result = await pushItem(env, {
-        id: payload.id || crypto.randomUUID(),
+        id: payload.id || NIL_UUID, // pakai nil-UUID â†’ otomatis masuk mode test
         amount_raw: payload.amount_raw || 5000,
         donator_name: payload.donator_name || "Tester",
         message: payload.message || "test donasi",
-        created_at: new Date().toISOString(),
+        created_at: payload.created_at || new Date().toISOString(),
       });
       return json(result);
     }
